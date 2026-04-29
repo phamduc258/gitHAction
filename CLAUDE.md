@@ -74,3 +74,34 @@ End with a **summary review** containing:
 - Overall verdict: `APPROVE` (no critical), `COMMENT` (minor only), or `REQUEST_CHANGES` (any critical)
 
 Be concise. Quote the problematic code in comments. Suggest fix when non-obvious.
+
+## Machine-readable footer (REQUIRED)
+
+After the human-readable summary, append this exact block on its own line (it's an HTML comment so won't render, but the notify job will parse it). Use plain text only — no markdown. Keep keys lowercase. Each value on one line:
+
+```
+<!-- SLACK_BRIEF
+verdict: APPROVE | COMMENT | REQUEST_CHANGES
+critical: <number>
+warning: <number>
+info: <number>
+top_1: <short description with file:line>
+top_2: <short description with file:line>
+top_3: <short description with file:line>
+-->
+```
+
+Example:
+```
+<!-- SLACK_BRIEF
+verdict: REQUEST_CHANGES
+critical: 3
+warning: 7
+info: 7
+top_1: SQL Injection (OrderService.cs:63) — raw concat in ExecuteSqlRaw
+top_2: N+1 Query (OrderService.cs:29) — DB call inside loop
+top_3: Sync-over-async deadlock (OrderService.cs:46) — .Result on async task
+-->
+```
+
+If fewer than 3 issues, use `top_2: (none)` etc. Always include all 3 keys.

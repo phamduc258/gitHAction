@@ -29,17 +29,18 @@ jobs:
             Review pull request #${{ github.event.pull_request.number }} in ${{ github.repository }}.
 
             MANDATORY workflow:
-            1. Read CLAUDE.md to load review rules.
+            1. Read CLAUDE.md to load review rules — including the "Machine-readable footer" section.
             2. Run `gh pr diff ${{ github.event.pull_request.number }}` to see the diff.
             3. For EACH issue found, you MUST call `mcp__github_inline_comment__create_inline_comment` with the file path, line number, and a comment prefixed by severity emoji (:red_circle: critical, :large_yellow_circle: warning, :large_blue_circle: info). Do NOT just describe issues in your response — post them as actual inline comments via the tool.
             4. After all inline comments, post a summary by running `gh pr comment ${{ github.event.pull_request.number }} --body "<summary>"` containing:
                - Counts per severity
                - Top 3 issues
                - Verdict: APPROVE / COMMENT / REQUEST_CHANGES
+               - The `<!-- SLACK_BRIEF ... -->` footer block exactly as specified in CLAUDE.md (REQUIRED — the notify job parses this)
 
             Skip lockfiles, generated files, binaries.
 
-            A response without posting any inline comments AND a summary comment is a failed review.
+            A response without posting inline comments AND a summary comment containing the SLACK_BRIEF footer is a failed review.
           claude_args: |
             --model claude-sonnet-4-6
             --max-turns 25
@@ -50,6 +51,64 @@ jobs:
     if: always()
     runs-on: ubuntu-latest
     steps:
+      - name: Extract review brief from PR comment
+        id: brief
+        if: needs.review.result == 'success'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -e
+
+          # Find the latest PR comment containing the SLACK_BRIEF marker
+          body=$(gh api "repos/${{ github.repository }}/issues/${{ github.event.pull_request.number }}/comments" \
+            --jq '[.[] | select(.body | contains("SLACK_BRIEF"))] | last | .body // empty')
+
+          if [ -z "$body" ]; then
+            echo "found=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::No PR comment with SLACK_BRIEF marker found"
+            exit 0
+          fi
+
+          # Extract the SLACK_BRIEF block content (between marker and -->)
+          brief=$(awk '/<!-- SLACK_BRIEF/,/-->/' <<< "$body")
+
+          extract() {
+            grep -oP "(?i)^\s*$1\s*:\s*\K.*" <<< "$brief" | head -1 | sed 's/[[:space:]]*$//'
+          }
+
+          verdict=$(extract verdict)
+          critical=$(extract critical)
+          warning=$(extract warning)
+          info=$(extract info)
+          top_1=$(extract top_1)
+          top_2=$(extract top_2)
+          top_3=$(extract top_3)
+
+          case "$verdict" in
+            APPROVE)         emoji=":large_green_circle:"; verdict_text="Approved" ;;
+            COMMENT)         emoji=":large_yellow_circle:"; verdict_text="Comments" ;;
+            REQUEST_CHANGES) emoji=":red_circle:"; verdict_text="Changes Requested" ;;
+            *)               emoji=":grey_question:"; verdict_text="${verdict:-Unknown}" ;;
+          esac
+
+          # Escape quotes/backslashes for safe JSON embedding
+          json_escape() {
+            python3 -c "import json,sys; print(json.dumps(sys.stdin.read())[1:-1], end='')"
+          }
+
+          {
+            echo "found=true"
+            echo "verdict=$verdict"
+            echo "verdict_text=$verdict_text"
+            echo "verdict_emoji=$emoji"
+            echo "critical=${critical:-0}"
+            echo "warning=${warning:-0}"
+            echo "info=${info:-0}"
+            echo "top_1=$(printf '%s' "${top_1:-(none)}" | json_escape)"
+            echo "top_2=$(printf '%s' "${top_2:-(none)}" | json_escape)"
+            echo "top_3=$(printf '%s' "${top_3:-(none)}" | json_escape)"
+          } >> "$GITHUB_OUTPUT"
+
       - name: Send Slack message
         uses: slackapi/slack-github-action@v1.27.0
         with:
@@ -68,27 +127,52 @@ jobs:
                   "type": "section",
                   "text": {
                     "type": "mrkdwn",
-                    "text": "*<${{ github.event.pull_request.html_url }}|#${{ github.event.pull_request.number }} ${{ github.event.pull_request.title }}>*"
+                    "text": "${{ vars.SLACK_MENTION_USER_ID && format('<@{0}> ', vars.SLACK_MENTION_USER_ID) || '' }}heads up: *${{ steps.brief.outputs.verdict_emoji || ':white_check_mark:' }} ${{ steps.brief.outputs.verdict_text || (needs.review.result == 'success' && 'Reviewed' || 'Review failed') }}* on <${{ github.event.pull_request.html_url }}|#${{ github.event.pull_request.number }} ${{ github.event.pull_request.title }}>"
                   }
+                },
+                {
+                  "type": "divider"
                 },
                 {
                   "type": "section",
                   "fields": [
                     {
                       "type": "mrkdwn",
-                      "text": "*Repo:*\n`${{ github.repository }}`"
+                      "text": "*:red_circle: Critical*\n${{ steps.brief.outputs.critical || '—' }}"
                     },
                     {
                       "type": "mrkdwn",
-                      "text": "*Author:*\n${{ github.event.pull_request.user.login }}"
+                      "text": "*:large_yellow_circle: Warning*\n${{ steps.brief.outputs.warning || '—' }}"
                     },
                     {
                       "type": "mrkdwn",
-                      "text": "*Branch:*\n`${{ github.event.pull_request.head.ref }}` → `${{ github.event.pull_request.base.ref }}`"
+                      "text": "*:large_blue_circle: Info*\n${{ steps.brief.outputs.info || '—' }}"
                     },
                     {
                       "type": "mrkdwn",
-                      "text": "*Status:*\n${{ needs.review.result == 'success' && ':white_check_mark: Reviewed' || ':x: Review failed' }}"
+                      "text": "*Author*\n${{ github.event.pull_request.user.login }}"
+                    }
+                  ]
+                },
+                {
+                  "type": "section",
+                  "text": {
+                    "type": "mrkdwn",
+                    "text": "*Top 3 issues to address:*\n1. ${{ steps.brief.outputs.top_1 || '_no review brief available_' }}\n2. ${{ steps.brief.outputs.top_2 || '_—_' }}\n3. ${{ steps.brief.outputs.top_3 || '_—_' }}"
+                  }
+                },
+                {
+                  "type": "actions",
+                  "elements": [
+                    {
+                      "type": "button",
+                      "text": {
+                        "type": "plain_text",
+                        "text": "Open Pull Request",
+                        "emoji": true
+                      },
+                      "url": "${{ github.event.pull_request.html_url }}",
+                      "style": "${{ steps.brief.outputs.verdict == 'REQUEST_CHANGES' && 'danger' || 'primary' }}"
                     }
                   ]
                 },
@@ -97,7 +181,7 @@ jobs:
                   "elements": [
                     {
                       "type": "mrkdwn",
-                      "text": "Open the PR to see Claude's inline comments and summary review."
+                      "text": "Repo: `${{ github.repository }}` • Branch: `${{ github.event.pull_request.head.ref }}` → `${{ github.event.pull_request.base.ref }}`"
                     }
                   ]
                 }
