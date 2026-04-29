@@ -127,7 +127,7 @@ jobs:
                   "type": "section",
                   "text": {
                     "type": "mrkdwn",
-                    "text": "${{ vars.SLACK_MENTION_USER_ID && format('<@{0}> ', vars.SLACK_MENTION_USER_ID) || '' }}heads up: *${{ steps.brief.outputs.verdict_emoji || ':white_check_mark:' }} ${{ steps.brief.outputs.verdict_text || (needs.review.result == 'success' && 'Reviewed' || 'Review failed') }}* on <${{ github.event.pull_request.html_url }}|#${{ github.event.pull_request.number }} ${{ github.event.pull_request.title }}>"
+                    "text": "<@U03CKA3NG3W> heads up: *${{ steps.brief.outputs.verdict_emoji || ':white_check_mark:' }} ${{ steps.brief.outputs.verdict_text || (needs.review.result == 'success' && 'Reviewed' || 'Review failed') }}* on <${{ github.event.pull_request.html_url }}|#${{ github.event.pull_request.number }} ${{ github.event.pull_request.title }}>"
                   }
                 },
                 {
