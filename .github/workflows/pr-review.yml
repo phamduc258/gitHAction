@@ -1,0 +1,99 @@
+name: Claude PR Review
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write
+  id-token: write
+
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Claude Code Review
+        id: review
+        uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          prompt: |
+            Review this pull request thoroughly following the rules in CLAUDE.md.
+
+            Steps:
+            1. Read CLAUDE.md to load review rules.
+            2. Inspect the PR diff (changed files only — skip lockfiles, generated files, binaries).
+            3. Leave inline comments on specific lines for issues, prefixed with severity emoji.
+            4. Post a summary review at the end with totals and top 3 issues, then conclude with APPROVE / COMMENT / REQUEST_CHANGES.
+          claude_args: |
+            --model claude-sonnet-4-6
+            --max-turns 40
+
+  notify:
+    needs: review
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Send Slack message
+        uses: slackapi/slack-github-action@v1.27.0
+        with:
+          payload: |
+            {
+              "blocks": [
+                {
+                  "type": "header",
+                  "text": {
+                    "type": "plain_text",
+                    "text": ":robot_face: Claude Code Review Complete",
+                    "emoji": true
+                  }
+                },
+                {
+                  "type": "section",
+                  "text": {
+                    "type": "mrkdwn",
+                    "text": "*<${{ github.event.pull_request.html_url }}|#${{ github.event.pull_request.number }} ${{ github.event.pull_request.title }}>*"
+                  }
+                },
+                {
+                  "type": "section",
+                  "fields": [
+                    {
+                      "type": "mrkdwn",
+                      "text": "*Repo:*\n`${{ github.repository }}`"
+                    },
+                    {
+                      "type": "mrkdwn",
+                      "text": "*Author:*\n${{ github.event.pull_request.user.login }}"
+                    },
+                    {
+                      "type": "mrkdwn",
+                      "text": "*Branch:*\n`${{ github.event.pull_request.head.ref }}` → `${{ github.event.pull_request.base.ref }}`"
+                    },
+                    {
+                      "type": "mrkdwn",
+                      "text": "*Status:*\n${{ needs.review.result == 'success' && ':white_check_mark: Reviewed' || ':x: Review failed' }}"
+                    }
+                  ]
+                },
+                {
+                  "type": "context",
+                  "elements": [
+                    {
+                      "type": "mrkdwn",
+                      "text": "Open the PR to see Claude's inline comments and summary review."
+                    }
+                  ]
+                }
+              ]
+            }
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+          SLACK_WEBHOOK_TYPE: INCOMING_WEBHOOK
