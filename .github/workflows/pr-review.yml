@@ -24,17 +24,26 @@ jobs:
         uses: anthropics/claude-code-action@v1
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          track_progress: true
           prompt: |
-            Review this pull request thoroughly following the rules in CLAUDE.md.
+            Review pull request #${{ github.event.pull_request.number }} in ${{ github.repository }}.
 
-            Steps:
+            MANDATORY workflow:
             1. Read CLAUDE.md to load review rules.
-            2. Inspect the PR diff (changed files only — skip lockfiles, generated files, binaries).
-            3. Leave inline comments on specific lines for issues, prefixed with severity emoji.
-            4. Post a summary review at the end with totals and top 3 issues, then conclude with APPROVE / COMMENT / REQUEST_CHANGES.
+            2. Run `gh pr diff ${{ github.event.pull_request.number }}` to see the diff.
+            3. For EACH issue found, you MUST call `mcp__github_inline_comment__create_inline_comment` with the file path, line number, and a comment prefixed by severity emoji (:red_circle: critical, :large_yellow_circle: warning, :large_blue_circle: info). Do NOT just describe issues in your response — post them as actual inline comments via the tool.
+            4. After all inline comments, post a summary by running `gh pr comment ${{ github.event.pull_request.number }} --body "<summary>"` containing:
+               - Counts per severity
+               - Top 3 issues
+               - Verdict: APPROVE / COMMENT / REQUEST_CHANGES
+
+            Skip lockfiles, generated files, binaries.
+
+            A response without posting any inline comments AND a summary comment is a failed review.
           claude_args: |
             --model claude-sonnet-4-6
-            --max-turns 40
+            --max-turns 25
+            --allowedTools "mcp__github_inline_comment__create_inline_comment,Bash(gh pr diff:*),Bash(gh pr view:*),Bash(gh pr comment:*),Read,Glob,Grep"
 
   notify:
     needs: review
