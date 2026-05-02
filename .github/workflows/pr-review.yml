@@ -92,18 +92,20 @@ jobs:
         run: |
           set -e
 
-          # Find the latest PR comment containing the SLACK_BRIEF marker
+          # Find the latest PR comment containing the actual SLACK_BRIEF HTML comment marker.
+          # Use "<!-- SLACK_BRIEF" (not just "SLACK_BRIEF") to avoid matching the
+          # track_progress comment that mentions SLACK_BRIEF in plain text.
           body=$(gh api "repos/${{ github.repository }}/issues/${{ github.event.pull_request.number }}/comments" \
-            --jq '[.[] | select(.body | contains("SLACK_BRIEF"))] | last | .body // empty')
+            --jq '[.[] | select(.body | contains("<!-- SLACK_BRIEF"))] | last | .body // empty')
 
           if [ -z "$body" ]; then
             echo "found=false" >> "$GITHUB_OUTPUT"
-            echo "::warning::No PR comment with SLACK_BRIEF marker found"
+            echo "::warning::No PR comment with <!-- SLACK_BRIEF marker found"
             exit 0
           fi
 
-          # Extract the SLACK_BRIEF block content (more tolerant: matches "SLACK_BRIEF" anywhere in line)
-          brief=$(awk '/SLACK_BRIEF/,/-->/' <<< "$body")
+          # Extract the SLACK_BRIEF block content (between the HTML comment marker and -->)
+          brief=$(awk '/<!-- *SLACK_BRIEF/,/-->/' <<< "$body")
 
           echo "::group::Debug — found comment body (first 500 chars)"
           printf '%s\n' "${body:0:500}"
