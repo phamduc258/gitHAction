@@ -48,19 +48,32 @@ jobs:
 
             4. For EACH issue found:
                - If `(file, line)` is already in the dedup map from step 2a → SKIP (do not post).
-               - Otherwise, call `mcp__github_inline_comment__create_inline_comment` with severity emoji prefix (:red_circle: / :large_yellow_circle: / :large_blue_circle:).
+               - Otherwise, call `mcp__github_inline_comment__create_inline_comment` with severity emoji prefix (:red_circle: / :yellow_circle: / :large_blue_circle:).
 
             5. Post or update the summary:
                - If step 2b found an existing summary id, EDIT it:
                  `gh api -X PATCH "repos/${{ github.repository }}/issues/comments/<id>" -f body="<new summary>"`
                - Otherwise create a new one:
                  `gh pr comment ${{ github.event.pull_request.number }} --body "<summary>"`
-               - The summary MUST contain counts, top 3 issues, verdict, AND the `<!-- SLACK_BRIEF ... -->` footer (REQUIRED — the notify job parses it).
-               - Counts in SLACK_BRIEF reflect TOTAL current issues across the PR (existing + new), not just this run's findings.
+               - The summary body MUST end with the SLACK_BRIEF footer in EXACTLY this format (HTML comment, lowercase keys, one value per line, must be the last block in the body):
+
+                 ```
+                 <!-- SLACK_BRIEF
+                 verdict: REQUEST_CHANGES
+                 critical: 2
+                 warning: 5
+                 info: 5
+                 top_1: Sync-over-async deadlock (PaymentProcessor.cs:20) — .Result blocks
+                 top_2: Off-by-one crash (product.service.ts:28) — i <= length
+                 top_3: Swallowed exception (PaymentProcessor.cs:49) — catch(Exception) returns null
+                 -->
+                 ```
+
+                 (Replace values with the actual review data. Counts reflect TOTAL current issues across the PR, not just this run.)
 
             Skip lockfiles, generated files, binaries.
 
-            A failed review is one where you (a) post a duplicate inline comment on a line that was already commented, or (b) create a second summary comment instead of editing the existing one, or (c) skip posting the SLACK_BRIEF footer.
+            A failed review is one where you (a) post a duplicate inline comment on a line that was already commented, or (b) create a second summary comment instead of editing the existing one, or (c) skip the SLACK_BRIEF footer block, or (d) deviate from the exact SLACK_BRIEF key format.
           claude_args: |
             --model claude-sonnet-4-6
             --max-turns 30
@@ -89,8 +102,15 @@ jobs:
             exit 0
           fi
 
-          # Extract the SLACK_BRIEF block content (between marker and -->)
-          brief=$(awk '/<!-- SLACK_BRIEF/,/-->/' <<< "$body")
+          # Extract the SLACK_BRIEF block content (more tolerant: matches "SLACK_BRIEF" anywhere in line)
+          brief=$(awk '/SLACK_BRIEF/,/-->/' <<< "$body")
+
+          echo "::group::Debug — found comment body (first 500 chars)"
+          printf '%s\n' "${body:0:500}"
+          echo "::endgroup::"
+          echo "::group::Debug — extracted SLACK_BRIEF block"
+          printf '%s\n' "$brief"
+          echo "::endgroup::"
 
           extract() {
             grep -oP "(?i)^\s*$1\s*:\s*\K.*" <<< "$brief" | head -1 | sed 's/[[:space:]]*$//'
@@ -106,7 +126,7 @@ jobs:
 
           case "$verdict" in
             APPROVE)         emoji=":large_green_circle:"; verdict_text="Approved" ;;
-            COMMENT)         emoji=":large_yellow_circle:"; verdict_text="Comments" ;;
+            COMMENT)         emoji=":yellow_circle:"; verdict_text="Comments" ;;
             REQUEST_CHANGES) emoji=":red_circle:"; verdict_text="Changes Requested" ;;
             *)               emoji=":grey_question:"; verdict_text="${verdict:-Unknown}" ;;
           esac
@@ -162,7 +182,7 @@ jobs:
                     },
                     {
                       "type": "mrkdwn",
-                      "text": "*:large_yellow_circle: Warning*\n${{ steps.brief.outputs.warning || '—' }}"
+                      "text": "*:yellow_circle: Warning*\n${{ steps.brief.outputs.warning || '—' }}"
                     },
                     {
                       "type": "mrkdwn",
