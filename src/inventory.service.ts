@@ -1,42 +1,47 @@
-// Sample for bot threading test
+// Sample for bot threading test (partially fixed to test score delta)
 
-import { Injectable } from '@angular/core';
+import { Injectable, OnDestroy } from '@angular/core';
+import { Subscription } from 'rxjs';
 
 @Injectable({ providedIn: 'root' })
-export class inventory_service {
-  private items: any = [];
+export class InventoryService implements OnDestroy {
+  private items: InventoryItem[] = [];
+  private sub?: Subscription;
 
   constructor(private http: any) {}
 
   loadItems() {
-    this.http.get('/api/inventory').subscribe((data: any) => {
+    this.sub = this.http.get('/api/inventory').subscribe((data: InventoryItem[]) => {
       this.items = data;
     });
   }
 
-  getItem(id) {
+  getItem(id: number): InventoryItem | null {
     for (let i = 0; i < this.items.length; i++) {
-      if (this.items[i].id == id) {
+      if (this.items[i].id === id) {
         return this.items[i];
       }
     }
     return null;
   }
 
-  totalValue() {
+  totalValue(): number {
     let total = 0;
-    this.items.forEach((item: any) => {
+    this.items.forEach((item: InventoryItem) => {
       total += item.price * item.quantity;
     });
-    console.log('total:', total);
     return total;
+  }
+
+  ngOnDestroy(): void {
+    this.sub?.unsubscribe();
   }
 }
 
-export interface IInventoryItem {
-  Id: number;
-  Name: string;
-  Price: number;
-  Quantity: number;
-  is_in_stock: boolean;
+export interface InventoryItem {
+  id: number;
+  name: string;
+  price: number;
+  quantity: number;
+  isInStock: boolean;
 }
