@@ -240,7 +240,7 @@ jobs:
           token: ${{ secrets.SLACK_BOT_TOKEN }}
           payload: |
             {
-              "channel": "${{ vars.SLACK_CHANNEL_ID }}",
+              "channel": "${{ secrets.SLACK_CHANNEL_ID }}",
               "text": "Claude Code Review · #${{ github.event.pull_request.number }} ${{ github.event.pull_request.title }} — ${{ steps.brief.outputs.verdict_text }}",
               "blocks": [
                 {
@@ -315,7 +315,7 @@ jobs:
           token: ${{ secrets.SLACK_BOT_TOKEN }}
           payload: |
             {
-              "channel": "${{ vars.SLACK_CHANNEL_ID }}",
+              "channel": "${{ secrets.SLACK_CHANNEL_ID }}",
               "thread_ts": "${{ steps.thread.outputs.ts }}",
               "text": "Re-review #${{ steps.thread.outputs.review_count }} — ${{ steps.brief.outputs.verdict_text }} · ${{ steps.brief.outputs.overall }}/100",
               "blocks": [
@@ -362,7 +362,7 @@ jobs:
 
           # Use the ts from initial post (if first) or keep existing ts (if reply)
           ts="${{ steps.slack_initial.outputs.ts || steps.thread.outputs.ts }}"
-          channel="${{ steps.slack_initial.outputs.channel || vars.SLACK_CHANNEL_ID }}"
+          channel="${{ steps.slack_initial.outputs.channel || secrets.SLACK_CHANNEL_ID }}"
 
           if [ -z "$ts" ]; then
             echo "::warning::No ts available — skip saving tracking comment"
