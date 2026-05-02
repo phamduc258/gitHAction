@@ -50,19 +50,13 @@ jobs:
                - Skip if `(file, line)` is already in the dedup map.
                - Otherwise, call `mcp__github_inline_comment__create_inline_comment`. Format the body as:
                  `<severity_emoji> [<axis>] <message>`
-                 - severity: `:red_circle:` / `:yellow_circle:` / `:large_blue_circle:`
-                 - axis: `[Bugs]`, `[Security]`, `[Performance]`, or `[Maintainability]`
 
-            5. Compute one score per axis (0-100 integer) using the formula in CLAUDE.md:
-               `axis_score = max(0, 100 - critical_in_axis*20 - warning_in_axis*5 - info_in_axis*1)`
-               Count includes BOTH new findings from this run AND existing inline comments from previous runs (the total state of the PR).
+            5. Compute one score per axis (0-100 integer) using the formula in CLAUDE.md.
 
             6. Post or update the summary:
-               - If step 2b found an existing id, EDIT it:
-                 `gh api -X PATCH "repos/${{ github.repository }}/issues/comments/<id>" -f body="<new summary>"`
-               - Otherwise create new:
-                 `gh pr comment ${{ github.event.pull_request.number }} --body "<summary>"`
-               - Body MUST end with the SLACK_BRIEF footer in EXACTLY this format (lowercase keys, integer values, all 8 keys present):
+               - If step 2b found an existing id, EDIT it via `gh api -X PATCH`.
+               - Otherwise create new via `gh pr comment`.
+               - Body MUST end with the SLACK_BRIEF footer in EXACTLY this format (lowercase keys, integer scores, ALL 9 keys including `summary`):
 
                  ```
                  <!-- SLACK_BRIEF
@@ -74,14 +68,15 @@ jobs:
                  score_security: 15
                  score_performance: 65
                  score_maintainability: 82
+                 summary: SQL injection in PaymentProcessor and a sync-over-async deadlock are blockers. Fix these before re-review.
                  -->
                  ```
 
-                 (Replace values with actual review data. If an axis has no findings → `score_<axis>: 100`.)
+                 - The `summary` value is a 1-2 sentence prose TL;DR for Slack. Plain text only, no markdown, no line breaks.
 
             Skip lockfiles, generated files, binaries.
 
-            A failed review is one where you (a) post a duplicate inline comment on a previously-commented `(file, line)`, or (b) create a second summary comment instead of editing the existing one, or (c) skip the SLACK_BRIEF footer block, or (d) deviate from the exact 8-key SLACK_BRIEF format, or (e) forget to tag any inline comment with its axis.
+            A failed review is one where you (a) post a duplicate inline comment, (b) create a second summary comment instead of editing, (c) skip the SLACK_BRIEF footer, (d) deviate from the 9-key format, or (e) forget to tag any inline comment with its axis.
           claude_args: |
             --model claude-sonnet-4-6
             --max-turns 30
@@ -91,18 +86,18 @@ jobs:
     needs: review
     if: always()
     runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
     steps:
-      - name: Extract review brief and compute overall score
+      # ─────────────────────────────────────────────────────────────────
+      # Step 1: Extract review brief + compute scores from PR comment
+      # ─────────────────────────────────────────────────────────────────
+      - name: Extract review brief and compute scores
         id: brief
         if: needs.review.result == 'success'
-        env:
-          GH_TOKEN: ${{ github.token }}
         run: |
           set -e
 
-          # Find the latest PR comment containing the SLACK_BRIEF HTML marker.
-          # Use literal "<!-- SLACK_BRIEF" to avoid matching the track_progress comment
-          # which mentions SLACK_BRIEF in plain text.
           body=$(gh api "repos/${{ github.repository }}/issues/${{ github.event.pull_request.number }}/comments" \
             --jq '[.[] | select(.body | contains("<!-- SLACK_BRIEF"))] | last | .body // empty')
 
@@ -113,13 +108,6 @@ jobs:
           fi
 
           brief=$(awk '/<!-- *SLACK_BRIEF/,/-->/' <<< "$body")
-
-          echo "::group::Debug — comment body (first 500 chars)"
-          printf '%s\n' "${body:0:500}"
-          echo "::endgroup::"
-          echo "::group::Debug — extracted SLACK_BRIEF block"
-          printf '%s\n' "$brief"
-          echo "::endgroup::"
 
           extract() {
             grep -oP "(?i)^\s*$1\s*:\s*\K.*" <<< "$brief" | head -1 | sed 's/[[:space:]]*$//'
@@ -133,17 +121,15 @@ jobs:
           score_security=$(extract score_security)
           score_performance=$(extract score_performance)
           score_maintainability=$(extract score_maintainability)
+          summary=$(extract summary)
 
-          # Defaults if any axis score missing
           score_bugs=${score_bugs:-0}
           score_security=${score_security:-0}
           score_performance=${score_performance:-0}
           score_maintainability=${score_maintainability:-0}
 
-          # Overall = weighted average (Bugs 35% / Security 30% / Performance 20% / Maintainability 15%)
           overall=$(python3 -c "print(round(0.35*$score_bugs + 0.30*$score_security + 0.20*$score_performance + 0.15*$score_maintainability))")
 
-          # Letter grade from overall
           if   [ "$overall" -ge 90 ]; then grade="A"
           elif [ "$overall" -ge 80 ]; then grade="B"
           elif [ "$overall" -ge 70 ]; then grade="C"
@@ -151,7 +137,6 @@ jobs:
           else                              grade="F"
           fi
 
-          # Per-axis indicator emoji (Slack shortcodes — :large_yellow_circle: is what works in Slack)
           axis_emoji() {
             local s=$1
             if   [ "$s" -ge 80 ]; then echo ":large_green_circle:"
@@ -159,12 +144,6 @@ jobs:
             else                       echo ":red_circle:"
             fi
           }
-
-          emoji_bugs=$(axis_emoji "$score_bugs")
-          emoji_security=$(axis_emoji "$score_security")
-          emoji_performance=$(axis_emoji "$score_performance")
-          emoji_maintainability=$(axis_emoji "$score_maintainability")
-          overall_emoji=$(axis_emoji "$overall")
 
           case "$verdict" in
             APPROVE)         verdict_emoji=":large_green_circle:"; verdict_text="Approved" ;;
@@ -185,125 +164,227 @@ jobs:
             echo "score_security=$score_security"
             echo "score_performance=$score_performance"
             echo "score_maintainability=$score_maintainability"
-            echo "emoji_bugs=$emoji_bugs"
-            echo "emoji_security=$emoji_security"
-            echo "emoji_performance=$emoji_performance"
-            echo "emoji_maintainability=$emoji_maintainability"
+            echo "emoji_bugs=$(axis_emoji "$score_bugs")"
+            echo "emoji_security=$(axis_emoji "$score_security")"
+            echo "emoji_performance=$(axis_emoji "$score_performance")"
+            echo "emoji_maintainability=$(axis_emoji "$score_maintainability")"
             echo "overall=$overall"
-            echo "overall_emoji=$overall_emoji"
+            echo "overall_emoji=$(axis_emoji "$overall")"
             echo "grade=$grade"
+            # summary may contain special chars — use multiline output marker
+            delim="EOF_$(openssl rand -hex 8)"
+            echo "summary<<$delim"
+            echo "${summary:-No summary provided.}"
+            echo "$delim"
           } >> "$GITHUB_OUTPUT"
 
-          echo "::group::Computed scores"
-          echo "Bugs:           $score_bugs $emoji_bugs"
-          echo "Security:       $score_security $emoji_security"
-          echo "Performance:    $score_performance $emoji_performance"
-          echo "Maintainability: $score_maintainability $emoji_maintainability"
-          echo "Overall:        $overall ($grade) $overall_emoji"
-          echo "::endgroup::"
+      # ─────────────────────────────────────────────────────────────────
+      # Step 2: Find existing Slack thread tracking comment on the PR
+      # ─────────────────────────────────────────────────────────────────
+      - name: Look up Slack thread state
+        id: thread
+        if: needs.review.result == 'success'
+        run: |
+          set -e
 
-      - name: Send Slack message
-        uses: slackapi/slack-github-action@v1.27.0
+          tracking=$(gh api "repos/${{ github.repository }}/issues/${{ github.event.pull_request.number }}/comments" \
+            --jq '[.[] | select(.body | contains("<!-- SLACK_THREAD"))] | last')
+
+          if [ -z "$tracking" ] || [ "$tracking" = "null" ]; then
+            echo "is_first=true" >> "$GITHUB_OUTPUT"
+            echo "review_count=1" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          comment_id=$(jq -r '.id' <<< "$tracking")
+          body=$(jq -r '.body' <<< "$tracking")
+
+          extract() {
+            grep -oP "(?i)^\s*$1\s*:\s*\K.*" <<< "$body" | head -1 | sed 's/[[:space:]]*$//'
+          }
+
+          ts=$(extract ts)
+          last_score=$(extract last_score)
+          prev_count=$(extract review_count)
+          new_count=$((${prev_count:-0} + 1))
+
+          # Compute score delta vs last review
+          if [ -n "$last_score" ] && [ -n "${{ steps.brief.outputs.overall }}" ]; then
+            delta=$((${{ steps.brief.outputs.overall }} - last_score))
+            if   [ "$delta" -gt 0 ]; then delta_text=":arrow_up: +$delta"
+            elif [ "$delta" -lt 0 ]; then delta_text=":arrow_down: $delta"
+            else                          delta_text="= 0"
+            fi
+          else
+            delta_text=""
+          fi
+
+          {
+            echo "is_first=false"
+            echo "comment_id=$comment_id"
+            echo "ts=$ts"
+            echo "last_score=$last_score"
+            echo "review_count=$new_count"
+            echo "delta_text=$delta_text"
+          } >> "$GITHUB_OUTPUT"
+
+      # ─────────────────────────────────────────────────────────────────
+      # Step 3a: First review → post NEW message in channel
+      # ─────────────────────────────────────────────────────────────────
+      - name: Post initial Slack message (first review)
+        id: slack_initial
+        if: needs.review.result == 'success' && steps.thread.outputs.is_first == 'true'
+        uses: slackapi/slack-github-action@v2.0.0
         with:
+          method: chat.postMessage
+          token: ${{ secrets.SLACK_BOT_TOKEN }}
           payload: |
             {
+              "channel": "${{ vars.SLACK_CHANNEL_ID }}",
+              "text": "Claude Code Review · #${{ github.event.pull_request.number }} ${{ github.event.pull_request.title }} — ${{ steps.brief.outputs.verdict_text }}",
               "blocks": [
                 {
-                  "type": "header",
+                  "type": "section",
                   "text": {
-                    "type": "plain_text",
-                    "text": ":robot_face: Claude Code Review Complete",
-                    "emoji": true
+                    "type": "mrkdwn",
+                    "text": ":robot_face: *Claude Code Review*"
                   }
                 },
                 {
                   "type": "section",
                   "text": {
                     "type": "mrkdwn",
-                    "text": "<@U03CKA3NG3W> heads up: *${{ steps.brief.outputs.verdict_emoji || ':white_check_mark:' }} ${{ steps.brief.outputs.verdict_text || (needs.review.result == 'success' && 'Reviewed' || 'Review failed') }}* on <${{ github.event.pull_request.html_url }}|#${{ github.event.pull_request.number }} ${{ github.event.pull_request.title }}>"
+                    "text": ":pushpin: *<${{ github.event.pull_request.html_url }}|#${{ github.event.pull_request.number }} — ${{ github.event.pull_request.title }}>*"
                   }
-                },
-                {
-                  "type": "divider"
-                },
-                {
-                  "type": "section",
-                  "text": {
-                    "type": "mrkdwn",
-                    "text": "*Overall: ${{ steps.brief.outputs.grade || '—' }} (${{ steps.brief.outputs.overall || '—' }}/100)* ${{ steps.brief.outputs.overall_emoji || '' }}"
-                  }
-                },
-                {
-                  "type": "section",
-                  "fields": [
-                    {
-                      "type": "mrkdwn",
-                      "text": "${{ steps.brief.outputs.emoji_bugs || ':grey_question:' }} *Bugs*\n${{ steps.brief.outputs.score_bugs || '—' }}/100"
-                    },
-                    {
-                      "type": "mrkdwn",
-                      "text": "${{ steps.brief.outputs.emoji_security || ':grey_question:' }} *Security*\n${{ steps.brief.outputs.score_security || '—' }}/100"
-                    },
-                    {
-                      "type": "mrkdwn",
-                      "text": "${{ steps.brief.outputs.emoji_performance || ':grey_question:' }} *Performance*\n${{ steps.brief.outputs.score_performance || '—' }}/100"
-                    },
-                    {
-                      "type": "mrkdwn",
-                      "text": "${{ steps.brief.outputs.emoji_maintainability || ':grey_question:' }} *Maintainability*\n${{ steps.brief.outputs.score_maintainability || '—' }}/100"
-                    }
-                  ]
-                },
-                {
-                  "type": "divider"
-                },
-                {
-                  "type": "section",
-                  "fields": [
-                    {
-                      "type": "mrkdwn",
-                      "text": "*:red_circle: Critical*\n${{ steps.brief.outputs.critical || '—' }}"
-                    },
-                    {
-                      "type": "mrkdwn",
-                      "text": "*:large_yellow_circle: Warning*\n${{ steps.brief.outputs.warning || '—' }}"
-                    },
-                    {
-                      "type": "mrkdwn",
-                      "text": "*:large_blue_circle: Info*\n${{ steps.brief.outputs.info || '—' }}"
-                    },
-                    {
-                      "type": "mrkdwn",
-                      "text": "*Author*\n${{ github.event.pull_request.user.login }}"
-                    }
-                  ]
-                },
-                {
-                  "type": "actions",
-                  "elements": [
-                    {
-                      "type": "button",
-                      "text": {
-                        "type": "plain_text",
-                        "text": "Open Pull Request",
-                        "emoji": true
-                      },
-                      "url": "${{ github.event.pull_request.html_url }}",
-                      "style": "${{ steps.brief.outputs.verdict == 'REQUEST_CHANGES' && 'danger' || 'primary' }}"
-                    }
-                  ]
                 },
                 {
                   "type": "context",
                   "elements": [
                     {
                       "type": "mrkdwn",
-                      "text": "Repo: `${{ github.repository }}` • Branch: `${{ github.event.pull_request.head.ref }}` → `${{ github.event.pull_request.base.ref }}`"
+                      "text": ":bust_in_silhouette: ${{ github.event.pull_request.user.login }}   ·   cc <@U03CKA3NG3W>"
+                    }
+                  ]
+                },
+                {
+                  "type": "section",
+                  "text": {
+                    "type": "mrkdwn",
+                    "text": "${{ steps.brief.outputs.verdict_emoji }} *${{ steps.brief.outputs.verdict_text }}*   ·   :dart: *${{ steps.brief.outputs.grade }} (${{ steps.brief.outputs.overall }}/100)* ${{ steps.brief.outputs.overall_emoji }}\n:red_circle: ${{ steps.brief.outputs.critical }} critical  ·  :large_yellow_circle: ${{ steps.brief.outputs.warning }} warning  ·  :large_blue_circle: ${{ steps.brief.outputs.info }} info"
+                  }
+                },
+                {
+                  "type": "section",
+                  "fields": [
+                    { "type": "mrkdwn", "text": "${{ steps.brief.outputs.emoji_bugs }} *Bugs* ${{ steps.brief.outputs.score_bugs }}" },
+                    { "type": "mrkdwn", "text": "${{ steps.brief.outputs.emoji_security }} *Security* ${{ steps.brief.outputs.score_security }}" },
+                    { "type": "mrkdwn", "text": "${{ steps.brief.outputs.emoji_performance }} *Performance* ${{ steps.brief.outputs.score_performance }}" },
+                    { "type": "mrkdwn", "text": "${{ steps.brief.outputs.emoji_maintainability }} *Maintainability* ${{ steps.brief.outputs.score_maintainability }}" }
+                  ]
+                },
+                {
+                  "type": "section",
+                  "text": {
+                    "type": "mrkdwn",
+                    "text": ":speech_balloon: _${{ steps.brief.outputs.summary }}_"
+                  }
+                },
+                {
+                  "type": "actions",
+                  "elements": [
+                    {
+                      "type": "button",
+                      "text": { "type": "plain_text", "text": ":link: View PR", "emoji": true },
+                      "url": "${{ github.event.pull_request.html_url }}",
+                      "style": "${{ steps.brief.outputs.verdict == 'REQUEST_CHANGES' && 'danger' || 'primary' }}"
                     }
                   ]
                 }
               ]
             }
-        env:
-          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
-          SLACK_WEBHOOK_TYPE: INCOMING_WEBHOOK
+
+      # ─────────────────────────────────────────────────────────────────
+      # Step 3b: Re-review → post REPLY in existing thread
+      # ─────────────────────────────────────────────────────────────────
+      - name: Post re-review reply (in thread)
+        id: slack_reply
+        if: needs.review.result == 'success' && steps.thread.outputs.is_first == 'false'
+        uses: slackapi/slack-github-action@v2.0.0
+        with:
+          method: chat.postMessage
+          token: ${{ secrets.SLACK_BOT_TOKEN }}
+          payload: |
+            {
+              "channel": "${{ vars.SLACK_CHANNEL_ID }}",
+              "thread_ts": "${{ steps.thread.outputs.ts }}",
+              "text": "Re-review #${{ steps.thread.outputs.review_count }} — ${{ steps.brief.outputs.verdict_text }} · ${{ steps.brief.outputs.overall }}/100",
+              "blocks": [
+                {
+                  "type": "section",
+                  "text": {
+                    "type": "mrkdwn",
+                    "text": ":arrows_counterclockwise: *Re-review #${{ steps.thread.outputs.review_count }}*"
+                  }
+                },
+                {
+                  "type": "section",
+                  "text": {
+                    "type": "mrkdwn",
+                    "text": "${{ steps.brief.outputs.verdict_emoji }} *${{ steps.brief.outputs.verdict_text }}*   ·   :dart: *${{ steps.brief.outputs.grade }} (${{ steps.brief.outputs.overall }}/100)* ${{ steps.thread.outputs.delta_text }}\n:red_circle: ${{ steps.brief.outputs.critical }} critical  ·  :large_yellow_circle: ${{ steps.brief.outputs.warning }} warning  ·  :large_blue_circle: ${{ steps.brief.outputs.info }} info"
+                  }
+                },
+                {
+                  "type": "section",
+                  "fields": [
+                    { "type": "mrkdwn", "text": "${{ steps.brief.outputs.emoji_bugs }} *Bugs* ${{ steps.brief.outputs.score_bugs }}" },
+                    { "type": "mrkdwn", "text": "${{ steps.brief.outputs.emoji_security }} *Security* ${{ steps.brief.outputs.score_security }}" },
+                    { "type": "mrkdwn", "text": "${{ steps.brief.outputs.emoji_performance }} *Performance* ${{ steps.brief.outputs.score_performance }}" },
+                    { "type": "mrkdwn", "text": "${{ steps.brief.outputs.emoji_maintainability }} *Maintainability* ${{ steps.brief.outputs.score_maintainability }}" }
+                  ]
+                },
+                {
+                  "type": "section",
+                  "text": {
+                    "type": "mrkdwn",
+                    "text": ":speech_balloon: _${{ steps.brief.outputs.summary }}_"
+                  }
+                }
+              ]
+            }
+
+      # ─────────────────────────────────────────────────────────────────
+      # Step 4: Save Slack thread state in a hidden PR tracking comment
+      # ─────────────────────────────────────────────────────────────────
+      - name: Save Slack thread state
+        if: needs.review.result == 'success'
+        run: |
+          set -e
+
+          # Use the ts from initial post (if first) or keep existing ts (if reply)
+          ts="${{ steps.slack_initial.outputs.ts || steps.thread.outputs.ts }}"
+          channel="${{ steps.slack_initial.outputs.channel || vars.SLACK_CHANNEL_ID }}"
+
+          if [ -z "$ts" ]; then
+            echo "::warning::No ts available — skip saving tracking comment"
+            exit 0
+          fi
+
+          body=$(cat <<EOF
+          <!-- SLACK_THREAD
+          ts: $ts
+          channel: $channel
+          last_score: ${{ steps.brief.outputs.overall }}
+          last_verdict: ${{ steps.brief.outputs.verdict }}
+          review_count: ${{ steps.thread.outputs.review_count }}
+          updated_at: $(date -u +%Y-%m-%dT%H:%M:%SZ)
+          -->
+          EOF
+          )
+
+          if [ -n "${{ steps.thread.outputs.comment_id }}" ]; then
+            gh api -X PATCH "repos/${{ github.repository }}/issues/comments/${{ steps.thread.outputs.comment_id }}" -f body="$body"
+            echo "Updated tracking comment ${{ steps.thread.outputs.comment_id }}"
+          else
+            gh api -X POST "repos/${{ github.repository }}/issues/${{ github.event.pull_request.number }}/comments" -f body="$body"
+            echo "Created new tracking comment with ts=$ts"
+          fi

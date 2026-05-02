@@ -146,8 +146,14 @@ score_bugs: <0-100>
 score_security: <0-100>
 score_performance: <0-100>
 score_maintainability: <0-100>
+summary: <one or two sentence prose verdict — what blocks merge, biggest risk, or "ship it" tone>
 -->
 ```
+
+The `summary` line is the human-friendly TL;DR shown in Slack (1-2 sentences max, no markdown, no code blocks). Examples:
+- `summary: SQL injection in OrderService and a sync-over-async deadlock must be fixed before merge.`
+- `summary: Naming and a few Angular performance smells, but no blockers — fix and merge.`
+- `summary: Clean, no issues. Ship it.`
 
 Example for the test sample with bugs across all axes:
 
@@ -161,10 +167,11 @@ score_bugs: 40
 score_security: 15
 score_performance: 65
 score_maintainability: 82
+summary: SQL injection in PaymentProcessor and a sync-over-async deadlock are blockers. Several Angular smells too — fix them before requesting re-review.
 -->
 ```
 
-If an axis has no findings → `score_<axis>: 100`. Always include all 8 keys.
+If an axis has no findings → `score_<axis>: 100`. Always include all 9 keys.
 
 ## Deduplication (REQUIRED on re-review)
 
