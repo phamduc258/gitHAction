@@ -28,23 +28,43 @@ jobs:
           prompt: |
             Review pull request #${{ github.event.pull_request.number }} in ${{ github.repository }}.
 
+            This workflow runs on every push to the PR — previous reviews may already exist.
+            You MUST follow the deduplication rules in CLAUDE.md to avoid posting duplicate comments.
+
             MANDATORY workflow:
-            1. Read CLAUDE.md to load review rules — including the "Machine-readable footer" section.
-            2. Run `gh pr diff ${{ github.event.pull_request.number }}` to see the diff.
-            3. For EACH issue found, you MUST call `mcp__github_inline_comment__create_inline_comment` with the file path, line number, and a comment prefixed by severity emoji (:red_circle: critical, :large_yellow_circle: warning, :large_blue_circle: info). Do NOT just describe issues in your response — post them as actual inline comments via the tool.
-            4. After all inline comments, post a summary by running `gh pr comment ${{ github.event.pull_request.number }} --body "<summary>"` containing:
-               - Counts per severity
-               - Top 3 issues
-               - Verdict: APPROVE / COMMENT / REQUEST_CHANGES
-               - The `<!-- SLACK_BRIEF ... -->` footer block exactly as specified in CLAUDE.md (REQUIRED — the notify job parses this)
+
+            1. Read CLAUDE.md — pay attention to "Machine-readable footer" AND "Deduplication" sections.
+
+            2. Fetch existing review state (build dedup maps before reviewing):
+               a. Existing inline comments on this PR:
+                  `gh api "repos/${{ github.repository }}/pulls/${{ github.event.pull_request.number }}/comments" --jq '.[] | {file: .path, line: (.line // .original_line), body: (.body | .[0:80])}'`
+                  → Note every `(file, line)` already commented.
+               b. Existing Claude summary comment (if any):
+                  `gh api "repos/${{ github.repository }}/issues/${{ github.event.pull_request.number }}/comments" --jq '[.[] | select(.body | contains("SLACK_BRIEF"))] | last | {id, body}'`
+                  → Save the comment `id` if present, you will EDIT it instead of creating a new one.
+
+            3. Inspect the PR diff:
+               `gh pr diff ${{ github.event.pull_request.number }}`
+
+            4. For EACH issue found:
+               - If `(file, line)` is already in the dedup map from step 2a → SKIP (do not post).
+               - Otherwise, call `mcp__github_inline_comment__create_inline_comment` with severity emoji prefix (:red_circle: / :large_yellow_circle: / :large_blue_circle:).
+
+            5. Post or update the summary:
+               - If step 2b found an existing summary id, EDIT it:
+                 `gh api -X PATCH "repos/${{ github.repository }}/issues/comments/<id>" -f body="<new summary>"`
+               - Otherwise create a new one:
+                 `gh pr comment ${{ github.event.pull_request.number }} --body "<summary>"`
+               - The summary MUST contain counts, top 3 issues, verdict, AND the `<!-- SLACK_BRIEF ... -->` footer (REQUIRED — the notify job parses it).
+               - Counts in SLACK_BRIEF reflect TOTAL current issues across the PR (existing + new), not just this run's findings.
 
             Skip lockfiles, generated files, binaries.
 
-            A response without posting inline comments AND a summary comment containing the SLACK_BRIEF footer is a failed review.
+            A failed review is one where you (a) post a duplicate inline comment on a line that was already commented, or (b) create a second summary comment instead of editing the existing one, or (c) skip posting the SLACK_BRIEF footer.
           claude_args: |
             --model claude-sonnet-4-6
-            --max-turns 25
-            --allowedTools "mcp__github_inline_comment__create_inline_comment,Bash(gh pr diff:*),Bash(gh pr view:*),Bash(gh pr comment:*),Read,Glob,Grep"
+            --max-turns 30
+            --allowedTools "mcp__github_inline_comment__create_inline_comment,Bash(gh pr diff:*),Bash(gh pr view:*),Bash(gh pr comment:*),Bash(gh api:*),Read,Glob,Grep"
 
   notify:
     needs: review

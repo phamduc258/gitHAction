@@ -105,3 +105,38 @@ top_3: Sync-over-async deadlock (OrderService.cs:46) — .Result on async task
 ```
 
 If fewer than 3 issues, use `top_2: (none)` etc. Always include all 3 keys.
+
+## Deduplication (REQUIRED on re-review)
+
+This workflow re-runs every time a new commit is pushed to the PR (`synchronize` event). To avoid spamming the PR with repeated comments, you MUST follow these dedup rules:
+
+### Inline comments
+
+1. Before posting any inline comment, fetch existing review comments:
+   ```
+   gh api "repos/<owner>/<repo>/pulls/<pr>/comments" --jq '.[] | {file: .path, line: (.line // .original_line), body: (.body | .[0:80])}'
+   ```
+2. Build an internal map of `(file, line)` already commented.
+3. For each new finding:
+   - **Skip** if `(file, line)` already has a comment (assume the issue is already known/being addressed).
+   - **Post** only if the line has no existing comment.
+4. If the diff at a previously-commented line has CHANGED to introduce a different issue, post a new comment briefly noting the new concern (don't restate the old one).
+
+### Summary comment
+
+1. Fetch existing PR-level (issue) comments and find any previous Claude summary by the `<!-- SLACK_BRIEF` marker:
+   ```
+   gh api "repos/<owner>/<repo>/issues/<pr>/comments" --jq '.[] | select(.body | contains("SLACK_BRIEF")) | {id, created_at}'
+   ```
+2. If a previous summary exists:
+   - **Edit it** with the new summary (do NOT create a new one):
+     ```
+     gh api -X PATCH "repos/<owner>/<repo>/issues/comments/<id>" -f body="<new summary including SLACK_BRIEF footer>"
+     ```
+3. If no previous summary exists, create a new one via `gh pr comment <pr> --body "..."`.
+4. The summary counts in `SLACK_BRIEF` reflect the CURRENT total of unresolved issues across the whole PR (not just new issues from this run).
+
+### What "duplicate" means
+
+- **Duplicate inline**: same `(file, line)` regardless of comment text — skip.
+- **Duplicate summary**: more than one comment containing `SLACK_BRIEF` marker — there should always be exactly one (edit instead of create).
